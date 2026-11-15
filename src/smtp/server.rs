@@ -20,7 +20,9 @@ pub trait SmtpAuthenticator: Send + Sync + 'static {
     -> Option<(Arc<AccountContext>, String)>;
 }
 
-/// SMTP server configuration.
+/// SMTP server configuration. `tls` should be built once with
+/// [`TlsIdentity::acceptor`](crate::tls::TlsIdentity::acceptor) and shared
+/// with the IMAP listener (§11.1, §13.1).
 #[derive(Clone)]
 pub struct SmtpServer {
     pub auth: Arc<dyn SmtpAuthenticator>,

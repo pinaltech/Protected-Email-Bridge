@@ -1293,9 +1293,9 @@ The persisted-state key SHOULD be held in the OS credential store.
   KeyUsage = keyEncipherment | digitalSignature | certSign;
   ExtKeyUsage = serverAuth, clientAuth; validity 20 years.
   It MUST be regenerated if it expires within 31 days.
-  Client certificates are verified if presented.
-  The minimum TLS version SHOULD be configurable; legacy clients may need
-  versions below TLS 1.2.
+* TLS parameters: minimum protocol version **TLS 1.2**. The server does not
+  request client certificates. The same TLS configuration applies to the
+  IMAP and SMTP listeners, for both implicit TLS and STARTTLS.
 
 ### 11.2 Greeting and Capabilities
 
@@ -1919,8 +1919,9 @@ is clamped to between 800 MiB and half of system RAM.
    (identity, IMAP, SMTP, user settings). Within an event, each subsystem
    processes the parts in this order:
    Refresh → User → Addresses → Labels → Messages → UsedSpace.
-   Subsystems run in parallel; an event completes only after all subsystems
-   have finished it.
+   Subsystems MAY process an event concurrently or one after another. In
+   either case, an event completes only after every subsystem has finished
+   it, and a failure in any subsystem fails the event (step 5).
 4. **Commit.** After the whole batch succeeds, store the last EventID.
 5. **Errors** while handling an event:
    * Retry on the next cycle without advancing (transient): caller
@@ -2521,6 +2522,7 @@ fingerprint = B64( h.digest() )
 | UIDVALIDITY epoch | 2023-02-01T00:00:00Z |
 | New label color | `#f66` |
 | TLS certificate | RSA-2048, 20-year, CN/SAN 127.0.0.1; renew when < 31 days remain |
+| TLS minimum version | 1.2; no client certificate request |
 | Gateway password | 16 random octets, B64URL-NP |
 | SRP size | 2048 bits, generator 2 |
 | bcrypt | `$2y$`, cost 10 |

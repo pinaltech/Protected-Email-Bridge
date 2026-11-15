@@ -351,6 +351,11 @@ impl Synchroniser {
     }
 
     /// Process one event: Refresh → User → Addresses → Labels → Messages.
+    ///
+    /// Subsystems are processed one after another, which §12.2 step 3
+    /// permits. The event completes only after every part has been
+    /// handled, and the first failure fails the whole event; the caller then
+    /// applies the step 5 error rules without advancing the EventID.
     pub async fn handle_event(self: &Arc<Self>, ev: &Event) -> Result<()> {
         let ctx = &self.ctx;
         if ev.refresh & refresh_flag::MAIL != 0 {

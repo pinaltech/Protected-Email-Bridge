@@ -17,7 +17,7 @@ end-to-end encrypted mail Service's HTTPS/JSON API to standard mail clients.
 | `sync` | §12 | Initial sync (resumable, batched, adaptive concurrency) and the event loop |
 | `smtp` | §13 | SMTP server (STARTTLS/implicit TLS, AUTH PLAIN/LOGIN, DATA/BDAT), MIME normalisation, parent resolution, drafts, attachments, send preferences, packages, dedup, throttling, error mapping |
 | `account`, `gateway` | §10 | Gateway passwords, address modes, AES-GCM-encrypted state store, account runtime, gateway façade |
-| `tls` | §11.1 | Self-signed RSA-2048 listener certificate |
+| `tls` | §11.1 | Self-signed RSA-2048 listener certificate; shared listener TLS config (TLS 1.2 minimum, no client certificate request) |
 
 ## Usage sketch
 
@@ -56,11 +56,8 @@ tokio::spawn(SmtpServer { auth: gw.clone(), tls, security: ListenerSecurity::Sta
   renderer (FETCH/BODYSTRUCTURE/SEARCH/IDLE framing). The mailbox model,
   local state, change notifications and command semantics are implemented in
   `imap::backend::ImapBackend`, ready to plug into a front-end.
-* **Limited by dependencies:** TLS versions below 1.2 are unavailable
-  because rustls doesn't support them. Presented client certificates are not
-  verified. OpenPGP signatures use the local clock rather than the Service
-  time (the offset is tracked in `ApiClient::server_now`).
-* Within an event, the subsystems run one after another, not in parallel.
+* OpenPGP signatures use the local clock rather than the Service time (the
+  offset is tracked in `ApiClient::server_now`).
 
 ## Testing
 
