@@ -162,7 +162,7 @@ but MUST use them consistently. Recommended neutral names are shown.
 
 | Header | When | Value |
 |---|---|---|
-| `x-pm-appversion` | Every request | `<platform>-<APP_PRODUCT_TOKEN>@<semver>`. `<platform>` is one of `linux`, `macos`, `windows`. The Service rejects missing or unsupported values with error code 5001 or 5003. |
+| `x-pm-appversion` | Every request | `<platform>-<APP_PRODUCT_TOKEN>@<semver>`. `<platform>` is one of `linux`, `macos`, `windows`: the platform the Client runs on, unless the embedding application names another. The Service rejects missing or unsupported values with error code 5001 or 5003. |
 | `User-Agent` | Every request | `<client>/<version> (<os>)`. `<client>/<version>` is the name and version of the most recent mail client seen (from the IMAP `ID` command, §11.4.3), or `NoClient/0.0.1` if none has been seen. Spaces in the client version are folded as `A (B)` → `A-B`. When an SMTP session authenticates while the agent is still the default, `UnknownClient/0.0.1` is substituted. Identification strings from note-taking agents MUST be ignored. |
 | `x-pm-uid` | Every authenticated request | The session UID (§5.1.6). |
 | `Authorization` | Every authenticated request | `Bearer <AccessToken>`. |

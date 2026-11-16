@@ -19,6 +19,9 @@ pub struct DeploymentConfig {
     pub app_product_token: String,
     /// Application semantic version embedded in `x-pm-appversion`.
     pub app_version: String,
+    /// The platform embedded in `x-pm-appversion` in place of the one this
+    /// build runs on (`platform_token`); `None` (or blank) keeps that one.
+    pub app_platform: Option<String>,
     /// Product name used in the IMAP greeting / ID response.
     pub product_name: String,
     /// `API_TLS_PINS` — optional base64 SHA-256 SPKI pins.
@@ -30,10 +33,20 @@ impl DeploymentConfig {
     pub fn app_version_header(&self) -> String {
         format!(
             "{}-{}@{}",
-            platform_token(),
+            self.platform(),
             self.app_product_token,
             self.app_version
         )
+    }
+
+    /// The platform `x-pm-appversion` names: `app_platform` when set, else
+    /// the one this build runs on.
+    pub fn platform(&self) -> &str {
+        self.app_platform
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or(platform_token())
     }
 }
 
@@ -184,4 +197,31 @@ pub mod limits {
     pub const SRP_LEN: usize = 256;
 
     pub const BCRYPT_COST: u32 = 10;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(app_platform: Option<&str>) -> DeploymentConfig {
+        DeploymentConfig {
+            api_base_url: "https://api.example/".into(),
+            modulus_signing_key: String::new(),
+            srp_salt_suffix: *b"suffix",
+            refresh_redirect_uri: "https://example/".into(),
+            app_product_token: "app".into(),
+            app_version: "1.2.3".into(),
+            app_platform: app_platform.map(Into::into),
+            product_name: "App".into(),
+            api_tls_pins: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn app_version_header_names_the_platform_given_or_this_one() {
+        let own = format!("{}-app@1.2.3", platform_token());
+        assert_eq!(config(None).app_version_header(), own);
+        assert_eq!(config(Some(" ")).app_version_header(), own);
+        assert_eq!(config(Some("windows")).app_version_header(), "windows-app@1.2.3");
+    }
 }
