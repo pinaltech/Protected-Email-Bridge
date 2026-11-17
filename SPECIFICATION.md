@@ -791,7 +791,7 @@ contact has no preferences.
 | `Messages` | []`{ID, Action, Message: MessageMetadata}` | |
 | `Labels` | []`{ID, Action, Label}` | |
 | `Addresses` | []`{ID, Action, Address}` | |
-| `Notifications` | []`{ID, UID, UserID, Type, Time, Payload: {Title, Subtitle, Body}}` | |
+| `Notifications` | []`{ID, UID, UserID, Type, Time, Payload: {Title, Subtitle, Body}}` | `Type` is text (e.g. `modal`) |
 | `UsedSpace` | I | Optional. |
 | `More` | B | 1 if further events are immediately available. |
 

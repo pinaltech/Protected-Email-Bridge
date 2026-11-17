@@ -565,12 +565,31 @@ pub struct Notification {
     pub uid: String,
     #[serde(rename = "UserID", default)]
     pub user_id: String,
-    #[serde(rename = "Type", default)]
-    pub kind: i64,
+    /// What the notification is for, as text (`modal` for popups. It was parsed as a number, and the text the Service sends made
+    /// every event carrying a notification fail, stalling the event loop at
+    /// it; a number is still read, as its digits, should one come.
+    #[serde(rename = "Type", default, deserialize_with = "text_or_number")]
+    pub kind: String,
     #[serde(default)]
     pub time: i64,
     #[serde(default)]
     pub payload: NotificationPayload,
+}
+
+/// A string field that may also arrive as a number (or null).
+fn text_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Text(String),
+        Number(serde_json::Number),
+        Null(()),
+    }
+    Ok(match Raw::deserialize(d)? {
+        Raw::Text(t) => t,
+        Raw::Number(n) => n.to_string(),
+        Raw::Null(()) => String::new(),
+    })
 }
 
 /// Event refresh bits (§7.7).
@@ -703,6 +722,22 @@ mod tests {
                 ("From", "x")
             ]
         );
+    }
+
+    /// An event carrying a notification parses: its type is text.
+    #[test]
+    fn event_with_a_notification() {
+        let j = r#"{"EventID":"e2","Refresh":0,"More":0,"Notifications":[{"ID":"n","UID":"u","UserID":"x","Type":"modal","Time":1700000000,"Payload":{"Title":"T","Subtitle":"S","Body":"B"}}]}"#;
+        let e: Event = serde_json::from_str(j).unwrap();
+        assert_eq!(e.event_id, "e2");
+        let n = &e.notifications[0];
+        assert_eq!(n.kind, "modal");
+        assert_eq!((n.payload.title.as_str(), n.payload.body.as_str()), ("T", "B"));
+        for (raw, kind) in [("7", "7"), ("null", "")] {
+            let j = format!(r#"{{"ID":"n","Type":{raw}}}"#);
+            let n: Notification = serde_json::from_str(&j).unwrap();
+            assert_eq!(n.kind, kind);
+        }
     }
 
     #[test]

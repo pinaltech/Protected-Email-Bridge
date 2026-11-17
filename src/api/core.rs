@@ -173,19 +173,60 @@ impl ApiClient {
             .await
     }
 
+    /// [`Self::get_event`], also returning the response exactly as the
+    /// Service sent it, with the fields [`Event`] does not model.
+    pub async fn get_event_raw(&self, event_id: &str) -> Result<(Event, serde_json::Value)> {
+        let raw = self
+            .send(Request::get(format!("/core/v4/events/{event_id}")))
+            .await?;
+        Ok((raw.json()?, raw.json()?))
+    }
+
     /// Chained fetch (§8.5): follow `More = 1` up to the chain cap. Returns
     /// an empty list when nothing changed.
     pub async fn get_events_chained(&self, event_id: &str) -> Result<Vec<Event>> {
+        Ok(self
+            .chain_events(event_id, false)
+            .await?
+            .into_iter()
+            .map(|(e, _)| e)
+            .collect())
+    }
+
+    /// [`Self::get_events_chained`], with each event's raw response as in
+    /// [`Self::get_event_raw`].
+    pub async fn get_events_chained_raw(
+        &self,
+        event_id: &str,
+    ) -> Result<Vec<(Event, serde_json::Value)>> {
+        Ok(self
+            .chain_events(event_id, true)
+            .await?
+            .into_iter()
+            .map(|(e, raw)| (e, raw.unwrap_or_default()))
+            .collect())
+    }
+
+    async fn chain_events(
+        &self,
+        event_id: &str,
+        keep_raw: bool,
+    ) -> Result<Vec<(Event, Option<serde_json::Value>)>> {
         let mut out = Vec::new();
         let mut cursor = event_id.to_string();
         for _ in 0..limits::EVENT_CHAIN_CAP {
-            let ev = self.get_event(&cursor).await?;
+            let (ev, raw) = if keep_raw {
+                let (ev, raw) = self.get_event_raw(&cursor).await?;
+                (ev, Some(raw))
+            } else {
+                (self.get_event(&cursor).await?, None)
+            };
             if ev.event_id == cursor {
                 break;
             }
             cursor = ev.event_id.clone();
             let more = ev.more;
-            out.push(ev);
+            out.push((ev, raw));
             if !more {
                 break;
             }
