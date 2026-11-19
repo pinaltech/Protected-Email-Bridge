@@ -2615,6 +2615,12 @@ registered** in this process lifetime. Both are held in memory only.
 | Device-key generation, storage or export fails | Fatal for the step. Report the error. |
 | Any other API error | Fatal for the step. Report the error. |
 
+   A reported error MUST name the UID of the session being registered when
+   the step failed, so that the embedding application can attribute it to
+   that session's Account. A step that fails before reaching a candidate
+   (for example, when the stored sessions cannot be read) reports no
+   session.
+
 6. Because the registered set lives only in memory, every process start
    re-registers every signed-in session as soon as the platform supplies the
    registration record. This is REQUIRED behaviour. It keeps the Service's

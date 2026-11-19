@@ -186,16 +186,22 @@ impl Connectivity for ApiConnectivity {
     }
 }
 
-/// Receives registration-step failures (§14.3.3 step 5).
+/// Receives each session's registration and the step failures (§14.3.3
+/// step 5).
 pub trait RegistrationObserver: Send + Sync {
-    fn registration_failed(&self, _error: &Error) {}
+    /// A step failed. `session_uid` is the session being registered when
+    /// it failed, or `None` if it failed before reaching one.
+    fn registration_failed(&self, _session_uid: Option<&str>, _error: &Error) {}
     fn registered(&self, _session_uid: &str) {}
 }
 
 struct LogObserver;
 impl RegistrationObserver for LogObserver {
-    fn registration_failed(&self, error: &Error) {
-        warn!("push device registration failed: {error}");
+    fn registration_failed(&self, session_uid: Option<&str>, error: &Error) {
+        match session_uid {
+            Some(uid) => warn!(session = %uid, "push device registration failed: {error}"),
+            None => warn!("push device registration failed: {error}"),
+        }
     }
 }
 
@@ -208,8 +214,13 @@ pub enum StepOutcome {
     Deferred,
     /// No HTTP response: retry the whole step once online.
     NetworkFailure,
-    /// Fatal for the step; reported.
-    Failed(Error),
+    /// Fatal for the step; reported. `session` is the UID of the session
+    /// being registered when it failed, or `None` if it failed before
+    /// reaching one.
+    Failed {
+        session: Option<String>,
+        error: Error,
+    },
 }
 
 fn is_network(e: &Error) -> bool {
@@ -278,8 +289,9 @@ impl Registrar {
                             }
                         }
                     }
-                    StepOutcome::Failed(e) => {
-                        self.observer.registration_failed(&e);
+                    StepOutcome::Failed { session, error } => {
+                        self.observer
+                            .registration_failed(session.as_deref(), &error);
                         break;
                     }
                     StepOutcome::Deferred => {
@@ -325,7 +337,12 @@ impl Registrar {
         };
         let sessions = match self.sessions.stored_sessions() {
             Ok(s) => s,
-            Err(e) => return StepOutcome::Failed(e),
+            Err(error) => {
+                return StepOutcome::Failed {
+                    session: None,
+                    error,
+                };
+            }
         };
         let candidates: Vec<StoredSession> = sessions
             .into_iter()
@@ -349,7 +366,12 @@ impl Registrar {
                 .and_then(|k| k.armored_public_key())
             {
                 Ok(pk) => pk,
-                Err(e) => return StepOutcome::Failed(e),
+                Err(error) => {
+                    return StepOutcome::Failed {
+                        session: Some(candidate.uid),
+                        error,
+                    };
+                }
             };
             match client.register_device(&record.request(public_key)).await {
                 Ok(()) => {
@@ -358,7 +380,12 @@ impl Registrar {
                 }
                 Err(e) if is_network(&e) => return StepOutcome::NetworkFailure,
                 Err(e) if is_missing_scopes(&e) => return StepOutcome::Deferred,
-                Err(e) => return StepOutcome::Failed(e),
+                Err(error) => {
+                    return StepOutcome::Failed {
+                        session: Some(candidate.uid),
+                        error,
+                    };
+                }
             }
         }
         StepOutcome::Done
@@ -532,7 +559,7 @@ mod tests {
         let (r, _) = registrar(&stub.base, vec![(session("a", true), Some(true))]).await;
         assert!(matches!(
             r.step(Some(&rec), &mut done).await,
-            StepOutcome::Failed(_)
+            StepOutcome::Failed { session: Some(uid), .. } if uid == "a"
         ));
     }
 
@@ -614,6 +641,52 @@ mod tests {
         wait_for(2).await;
         let seen = stub.seen.lock().unwrap().clone();
         assert_eq!(seen.last().unwrap().body["DeviceToken"], "t2");
+        h.abort();
+    }
+
+    /// The observer hears which session the Service refused.
+    #[tokio::test]
+    async fn run_reports_the_refused_session() {
+        let stub = test_support::start(Arc::new(|_| {
+            (400, r#"{"Code":2001,"Error":"Invalid input"}"#.into())
+        }))
+        .await;
+        let keys = Arc::new(DeviceKeyManager::new(
+            Arc::new(MemorySecureStore::default()),
+        ));
+        let (stx, _) = watch::channel(0u64);
+        let fake = Arc::new(FakeSessions {
+            sessions: vec![(session("a", true), Some(true))],
+            client: test_support::client(&stub.base).await,
+            tx: stx,
+        });
+        let (rtx, rrx) = watch::channel(None);
+        let failed = Arc::new(Mutex::new(Vec::new()));
+        struct Obs(Arc<Mutex<Vec<Option<String>>>>);
+        impl RegistrationObserver for Obs {
+            fn registration_failed(&self, session_uid: Option<&str>, _: &Error) {
+                self.0.lock().unwrap().push(session_uid.map(str::to_owned));
+            }
+        }
+        let h = Registrar::new(
+            fake,
+            keys,
+            Arc::new(Online),
+            rrx,
+            Some(Arc::new(Obs(failed.clone()))),
+        )
+        .spawn();
+        rtx.send_replace(Some(DeviceRegistrationRecord::new(
+            "t1",
+            Environment::AndroidCloudMessaging,
+        )));
+        for _ in 0..200 {
+            if !failed.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*failed.lock().unwrap(), [Some("a".to_owned())]);
         h.abort();
     }
 
