@@ -44,3 +44,10 @@ tracing = "0.1.44"
 uuid = { version = "1.29.2", features = ["v4"] }
 x509-parser = "0.18"
 zeroize = "1.9.1"
+
+# Proton push notifications: Android messaging tokens registered against
+# their Firebase installation (see its README). Points at a local
+# Picacho-Patches checkout until the folder is published to its
+# vendor-split-dev branch.
+[patch."https://github.com/agusibrahim/fcm_receiver.rs"]
+fcm_receiver_rs = { git = "https://github.com/pinaltech/Picacho-Patches", branch = "vendor-split-dev" }
