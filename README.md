@@ -17,6 +17,7 @@ end-to-end encrypted mail Service's HTTPS/JSON API to standard mail clients.
 | `sync` | §12 | Initial sync (resumable, batched, adaptive concurrency) and the event loop |
 | `smtp` | §13 | SMTP server (STARTTLS/implicit TLS, AUTH PLAIN/LOGIN, DATA/BDAT), MIME normalisation, parent resolution, drafts, attachments, send preferences, packages, dedup, throttling, error mapping |
 | `account`, `gateway` | §10 | Gateway passwords, address modes, AES-GCM-encrypted state store, account runtime, gateway façade |
+| `push` | §14 | Mobile push-notification client profile: device key (Ed25519/Curve25519, unlocked, B64 in a `SecureStore`), device registration (`POST /core/v4/devices`, background `Registrar` with 9100 deferral and network retry), envelope decryption, `email`/`open_url` payloads and presentation, quick actions with a versioned durable queue (immediate bounded attempt, local apply/revert, deferred send), notification-originated message/conversation opening, and an Android cloud-messaging transport (`push::fcm`) built on [`fcm_receiver_rs`](https://github.com/agusibrahim/fcm_receiver.rs) |
 | `tls` | §11.1 | Self-signed RSA-2048 listener certificate; shared listener TLS config (TLS 1.2 minimum, no client certificate request) |
 
 ## Usage sketch
@@ -46,6 +47,18 @@ Synchroniser::new(account.clone(), None).start();
 let tls = TlsIdentity::generate()?.acceptor()?;
 tokio::spawn(SmtpServer { auth: gw.clone(), tls, security: ListenerSecurity::StartTls }.serve(1025));
 
+// Push notifications (§14). Use the OS keychain for the SecureStore, and
+// set `app_platform: Some("android".into())` in the DeploymentConfig.
+use protected_email_bridge::push::{NotificationClient, fcm::FcmConfig};
+let push = NotificationClient::new(gw.clone(), secure_store, None)?;
+push.start_registration(None);
+let _fcm = push.start_fcm(FcmConfig::new(api_key, app_id, project_id), presenter)?;
+// Envelopes wait until stored accounts are resumed (instead of gw.resume_all()):
+push.resume_accounts().await?;
+// On user interaction:
+push.quick_action(&user_id, QuickAction::MoveToArchive, &message_id, Some(remaining)).await?;
+let opened = push.open_message(&user_id, &message_id).await?;
+
 // IMAP: a protocol front-end calls `gw.imap_login(user, pass)` and then the
 // returned `ImapBackend` methods for each command.
 ```
@@ -56,6 +69,18 @@ tokio::spawn(SmtpServer { auth: gw.clone(), tls, security: ListenerSecurity::Sta
   renderer (FETCH/BODYSTRUCTURE/SEARCH/IDLE framing). The mailbox model,
   local state, change notifications and command semantics are implemented in
   `imap::backend::ImapBackend`, ready to plug into a front-end.
+* **Push provider details.** `fcm_receiver_rs` is blocking and its socket
+  read cannot be interrupted, so `FcmPushProvider::stop` takes effect when
+  the current connection ends. Only the Android cloud-messaging transport
+  (environment 4) is built in; other environments are supported by feeding
+  `NotificationClient::set_registration_record` and `run` yourself.
+* **Push redelivery.** Processed deliveries are remembered as ciphertext
+  hashes (28 days, at most 512) in the `SecureStore`, so messages the
+  Push Provider redelivers after a restart are skipped. This needs a
+  persistent `SecureStore`; the bundled `MemorySecureStore` is not.
+* **Push local store.** Conversations and the "draft open in composer" set
+  are kept in memory (`AccountContext::push`); messages are stored in the
+  IMAP mailbox set without bodies, which are built on demand.
 * OpenPGP signatures use the local clock rather than the Service time (the
   offset is tracked in `ApiClient::server_now`).
 

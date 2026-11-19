@@ -316,6 +316,38 @@ impl ApiClient {
         }
     }
 
+    /// Execute a request exactly once, with transport-level retries (§4.5)
+    /// disabled, optionally bounded by `deadline` (§14.6.2 step 3). A 401
+    /// still triggers one token refresh and a single repeat (§4.7, §14.8).
+    /// Exceeding the deadline is reported as a network error.
+    pub(crate) async fn send_single_attempt(
+        &self,
+        req: Request,
+        deadline: Option<Duration>,
+    ) -> Result<RawResponse> {
+        let attempt = async {
+            let t = if req.authenticated {
+                Some(self.inner.tokens.read().await.clone())
+            } else {
+                None
+            };
+            match self.execute_once(&req, t.as_ref()).await {
+                Err(Error::Api(e)) if e.status == 401 && req.authenticated => {
+                    self.refresh().await?;
+                    let t = self.inner.tokens.read().await.clone();
+                    self.execute_once(&req, Some(&t)).await
+                }
+                other => other,
+            }
+        };
+        match deadline {
+            Some(d) => tokio::time::timeout(d, attempt)
+                .await
+                .map_err(|_| Error::Network("request deadline exceeded".into()))?,
+            None => attempt.await,
+        }
+    }
+
     /// Execute and decode JSON.
     pub(crate) async fn send_json<T: DeserializeOwned>(&self, req: Request) -> Result<T> {
         self.send(req).await?.json()

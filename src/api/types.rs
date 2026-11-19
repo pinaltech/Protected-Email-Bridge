@@ -290,6 +290,15 @@ pub struct MessageMetadata {
     pub is_forwarded: bool,
     #[serde(default)]
     pub num_attachments: i64,
+    /// The conversation the message belongs to (§14.7). Not used by the
+    /// IMAP/SMTP Gateway.
+    #[serde(
+        rename = "ConversationID",
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub conversation_id: String,
 }
 
 impl MessageMetadata {
@@ -624,6 +633,45 @@ pub struct Event {
     pub used_space: Option<i64>,
     #[serde(default, with = "intbool")]
     pub more: bool,
+}
+
+/// Per-label context of a conversation (§14.7.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ConversationLabel {
+    #[serde(rename = "ID")]
+    pub id: String,
+    #[serde(default)]
+    pub context_num_messages: i64,
+    #[serde(default)]
+    pub context_num_unread: i64,
+    #[serde(default)]
+    pub context_time: i64,
+}
+
+/// Conversation (§14.7.2). Only the fields the Notification Client uses are
+/// modelled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Conversation {
+    #[serde(rename = "ID")]
+    pub id: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub subject: String,
+    #[serde(default)]
+    pub num_messages: i64,
+    #[serde(default)]
+    pub num_unread: i64,
+    #[serde(default)]
+    pub time: i64,
+    #[serde(default, deserialize_with = "null_default")]
+    pub labels: Vec<ConversationLabel>,
+}
+
+impl Conversation {
+    pub fn has_label(&self, id: &str) -> bool {
+        self.labels.iter().any(|l| l.id == id)
+    }
 }
 
 /// Undo token (§7.8).

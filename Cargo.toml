@@ -14,6 +14,7 @@ bcrypt = "0.19.3"
 chrono = "0.4.45"
 crypto-bigint = { version = "0.7", features = ["zeroize"] }
 encoding_rs = "0.8.44"
+fcm_receiver_rs = { git = "https://github.com/agusibrahim/fcm_receiver.rs", rev = "fc4309843e7cc8220d382b5fe09b3e7697e08d83" }
 futures = "0.3.34"
 hex = "0.4.3"
 httpdate = "1.0.3"

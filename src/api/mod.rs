@@ -7,6 +7,7 @@ pub mod contacts;
 pub mod core;
 pub mod mail;
 pub mod pinning;
+pub mod push;
 pub mod types;
 
 pub use client::{ApiClient, ClientOptions, FormPart, HumanVerification, SessionTokens};

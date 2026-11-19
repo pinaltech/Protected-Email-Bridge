@@ -17,6 +17,7 @@
 //! * [`sync`] — initial synchronisation and the event loop (§12).
 //! * [`smtp`] — the SMTP submission server and pipeline (§13).
 //! * [`account`] — gateway passwords, address modes and persisted state (§10).
+//! * [`push`] — the mobile push-notification client profile (§14).
 
 pub mod account;
 pub mod api;
@@ -31,6 +32,7 @@ pub mod import;
 pub mod keys;
 pub mod literal;
 pub mod mime;
+pub mod push;
 pub mod smtp;
 pub mod srp;
 pub mod sync;

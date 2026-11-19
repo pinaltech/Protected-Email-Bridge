@@ -46,6 +46,8 @@ pub struct AccountContext {
     pub dedup: SendDedup,
     pub smtp_throttle: Mutex<FailureThrottle>,
     sync_mode: AtomicBool,
+    /// State of the push-notification client profile (§14).
+    pub push: crate::push::AccountPushState,
 }
 
 impl AccountContext {
@@ -78,6 +80,7 @@ impl AccountContext {
             dedup: SendDedup::new(),
             smtp_throttle: Mutex::new(FailureThrottle::default()),
             sync_mode: AtomicBool::new(false),
+            push: Default::default(),
         });
         ctx.unlock_address_rings();
         ctx
@@ -580,6 +583,8 @@ pub struct Gateway {
     pub login_throttle: crate::imap::admission::LoginThrottle,
     pub connections: crate::imap::admission::ConnectionRateLimiter,
     pub sessions: crate::imap::admission::SessionCounter,
+    /// Bumped whenever the set of stored sessions changes (§14.3.3).
+    session_changes: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 impl Gateway {
@@ -599,7 +604,35 @@ impl Gateway {
             login_throttle: crate::imap::admission::LoginThrottle::new(jail),
             connections: Default::default(),
             sessions: Default::default(),
+            session_changes: Arc::new(tokio::sync::watch::channel(0).0),
         })
+    }
+
+    /// Changes whenever a session is added, rotated, replaced or removed.
+    pub fn subscribe_sessions(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.session_changes.subscribe()
+    }
+
+    fn notify_sessions_changed(&self) {
+        self.session_changes.send_modify(|v| *v = v.wrapping_add(1));
+    }
+
+    /// The live account whose current session UID is `uid` (§14.4.3 step 5).
+    pub fn account_by_session_uid(&self, uid: &str) -> Option<Arc<AccountContext>> {
+        self.accounts()
+            .into_iter()
+            .find(|a| !uid.is_empty() && a.persisted().session_uid == uid)
+    }
+
+    /// Add a live account directly (tests only).
+    #[cfg(test)]
+    pub(crate) fn insert_account(&self, ctx: Arc<AccountContext>) {
+        self.accounts.write().expect("accounts lock").push(ctx);
+    }
+
+    /// The live account with this UserID.
+    pub fn account(&self, user_id: &str) -> Option<Arc<AccountContext>> {
+        self.accounts().into_iter().find(|a| a.user_id() == user_id)
     }
 
     pub fn accounts(&self) -> Vec<Arc<AccountContext>> {
@@ -619,6 +652,8 @@ impl Gateway {
         let store_ctx = Arc::downgrade(ctx);
         let client = ctx.client.clone();
         let deauth_ctx = Arc::downgrade(ctx);
+        let changes = self.session_changes.clone();
+        let changes2 = self.session_changes.clone();
         tokio::spawn(async move {
             client
                 .set_token_listener(Arc::new(move |t: &crate::api::SessionTokens| {
@@ -628,6 +663,7 @@ impl Gateway {
                             p.session_uid = uid;
                             p.refresh_token = rt;
                         });
+                        changes.send_modify(|v| *v = v.wrapping_add(1));
                     }
                 }))
                 .await;
@@ -636,6 +672,7 @@ impl Gateway {
                     if let Some(c) = deauth_ctx.upgrade() {
                         warn!("session deauthenticated; account signed out");
                         let _ = c.update_persisted(|p| p.clear_session());
+                        changes2.send_modify(|v| *v = v.wrapping_add(1));
                     }
                 }))
                 .await;
@@ -680,6 +717,7 @@ impl Gateway {
             .write()
             .expect("accounts lock")
             .push(ctx.clone());
+        self.notify_sessions_changed();
         Ok(ctx)
     }
 
@@ -727,6 +765,7 @@ impl Gateway {
                 .write()
                 .expect("accounts lock")
                 .push(ctx.clone());
+            self.notify_sessions_changed();
             out.push(ctx);
         }
         Ok(out)
@@ -745,6 +784,7 @@ impl Gateway {
                 s.write().expect("set lock").clear();
             }
             ctx.update_persisted(|p| p.clear_session())?;
+            self.notify_sessions_changed();
         }
         Ok(())
     }

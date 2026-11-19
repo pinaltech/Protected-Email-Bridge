@@ -25,7 +25,11 @@ The document covers:
   command maps onto API operations,
 * initial synchronisation and incremental event processing,
 * the SMTP server: extensions, the submission pipeline, recipient
-  encryption-preference resolution, and error reporting.
+  encryption-preference resolution, and error reporting,
+* the mobile push-notification client profile: device-key generation and
+  storage, device registration, the end-to-end encrypted push envelope and
+  its decryption, notification payload types, notification quick actions,
+  and notification-originated synchronisation (§14).
 
 ## Table of Contents
 
@@ -42,10 +46,11 @@ The document covers:
 11. IMAP Server
 12. Synchronisation and Event Processing
 13. SMTP Submission Server
-14. Security Considerations
-15. Appendix A — Message Fingerprint Algorithm
-16. Appendix B — Default Values and Limits
-17. Appendix C — Status and Error Code Tables
+14. Mobile Push-Notification Client Profile
+15. Security Considerations
+16. Appendix A — Message Fingerprint Algorithm
+17. Appendix B — Default Values and Limits
+18. Appendix C — Status and Error Code Tables
 
 ---
 
@@ -100,6 +105,10 @@ described in RFC 2119 and RFC 8174.
 | **Salted key passphrase** | The secret derived from the user's mailbox password that unlocks the User key ring (§6.2). |
 | **Gateway password** | A random secret the Gateway generates. Clients use it, instead of the Service password, to authenticate over IMAP and SMTP (§10.1). |
 | **Event** | One entry in the Service's change log, used for incremental sync (§12.2). |
+| **Notification Client** | A mobile mail application that receives end-to-end encrypted push notifications from the Service (§14). |
+| **Push Provider** | The operating-system vendor's push relay (for example, a mobile cloud-messaging service). It carries notifications from the Service to the device but MUST NOT be able to read them. |
+| **Device token** | The opaque address the Push Provider issues to one application installation. |
+| **Device key** | A device-local OpenPGP key pair. Its public half is registered with the Service and used to encrypt push notifications to the device (§14.2). |
 | **LE(x)** | The fixed-length little-endian byte encoding of integer *x*. |
 | **B64** | Standard Base64 (RFC 4648 §4) with padding, unless stated otherwise. |
 | **B64URL-NP** | URL-safe Base64 (RFC 4648 §5) without padding. |
@@ -851,6 +860,8 @@ ones require the authenticated headers of §4.2.
 | GET | `/contacts/v4/{id}` | Contact with cards | 8.12 |
 | GET | `/core/v4/settings` | User settings | 8.12 |
 | GET | `/tests/ping` | Reachability (unauthenticated) | 4.8 |
+| POST | `/core/v4/devices` | Register device for push notifications | 14.3 |
+| GET | `/mail/v4/conversations/{id}` | Conversation with message metadata | 14.7.2 |
 
 ### 8.2 Users and Addresses
 
@@ -2422,7 +2433,481 @@ Per Account:
 
 ---
 
-## 14. Security Considerations
+## 14. Mobile Push-Notification Client Profile
+
+This section specifies how a **Notification Client** (a mobile mail
+application, with the Android profile as the reference) receives,
+decrypts, presents and acts on push notifications from the Service. It is
+independent of the IMAP/SMTP Gateway in §10–§13. It reuses the transport
+(§4), authentication (§5) and data model (§7) of this document.
+
+### 14.1 Overview and Design Goals
+
+1. **Confidentiality from the Push Provider.** Every notification travels
+   through a third-party Push Provider. The Service MUST encrypt the whole
+   notification (topic, sender, subject and recipient metadata) with a public
+   key that only the receiving device holds. The Push Provider sees nothing
+   but an opaque session identifier and an OpenPGP message.
+2. **Account-independent key.** One device key serves every Account signed in
+   on the installation. Decrypting a notification needs neither the user's
+   password nor an unlocked User or Address key ring. This lets notifications
+   be processed while the application is not running and the mailbox keys are
+   locked.
+3. **Business-unit agnostic envelope.** The decryption step makes no
+   assumption about the notification's content beyond "UTF-8 JSON". Product
+   semantics are applied in a second, separate parsing step (§14.5).
+4. **Bounded background work.** Actions taken from a notification run inside
+   the operating system's limited background-execution window (§14.6).
+
+The lifecycle has five phases:
+
+```
+ ┌────────────┐   ┌──────────────┐   ┌─────────────┐   ┌───────────┐   ┌───────────────┐
+ │ Device key │──▶│ Registration │──▶│  Delivery   │──▶│ Decryption│──▶│ Presentation  │
+ │ (§14.2)    │   │ (§14.3)      │   │ (§14.4)     │   │ (§14.4.3) │   │ & action      │
+ └────────────┘   └──────────────┘   └─────────────┘   └───────────┘   │ (§14.5–14.7)  │
+                                                                       └───────────────┘
+```
+
+### 14.2 Device Key
+
+#### 14.2.1 Generation
+
+1. The Notification Client MUST generate the device key locally. It MUST NOT
+   synchronise the key's private half with the Service or with other devices.
+2. Algorithm: an elliptic-curve OpenPGP key (RFC 4880 / RFC 9580). That is,
+   an EdDSA (Ed25519) primary signing key with an ECDH (Curve25519)
+   encryption subkey.
+3. User ID: a fixed, non-routable placeholder with identical name and email
+   components. The RECOMMENDED value is
+   `not_for_email_use@domain.tld <not_for_email_use@domain.tld>`. The key
+   MUST NOT be usable as, or published as, a mail key.
+4. The private key is generated **without** a passphrase.
+5. Exactly **one** device key exists per application installation. It is
+   shared by all Accounts and sessions on that installation.
+
+#### 14.2.2 Storage
+
+1. The private key is serialised as an **unlocked binary** (unarmored)
+   OpenPGP transferable secret key, then encoded as B64 for storage.
+2. The B64 string MUST be stored only in the platform's secure credential
+   store (for example, a hardware-backed key store or keychain). It MUST NOT
+   be written to the general application database, logs or backups.
+3. The serialised bytes are secret. In-memory copies SHOULD be zeroed when
+   no longer needed.
+4. On load, the client decodes the B64, imports the unlocked binary secret
+   key, and derives the public key from it. The public key is never stored
+   separately as a secret.
+
+#### 14.2.3 Reuse and Regeneration
+
+* If a device key is already in the secure store, the client MUST reuse it
+  for every registration.
+* If none exists (first run, or the secure store was cleared), the client
+  MUST generate a new key, store it (§14.2.2), and use its public half for
+  the registration in progress.
+* A regenerated key makes notifications encrypted to the previous key
+  undecryptable. Because registrations are repeated for every session on
+  every process start (§14.3.3), the Service learns the new key at the next
+  registration pass.
+
+#### 14.2.4 Public-Key Export
+
+For registration, the public key is exported as an **ASCII-armored** OpenPGP
+public key block (`-----BEGIN PGP PUBLIC KEY BLOCK-----` …).
+
+### 14.3 Device Registration
+
+#### 14.3.1 Inputs from the Platform
+
+The host platform supplies a **device registration record**:
+
+| Element | Type | Description |
+|---|---|---|
+| Device token | string | The Push Provider address of this installation. |
+| Environment | enumeration | The Push Provider and build channel (§14.3.4). |
+| Ping notification status | integer, OPTIONAL | Opaque platform-reported status of background "ping" delivery. Passed through unchanged. |
+| Push notification status | integer, OPTIONAL | Opaque platform-reported status of user-visible notification permission. Passed through unchanged. |
+
+The platform MAY update this record at any time, for example when the Push
+Provider rotates the token or the user changes notification permissions.
+
+#### 14.3.2 Request
+
+`POST /core/v4/devices` (authenticated with the session being registered,
+§4.2):
+
+```json
+{
+  "DeviceToken": "<push provider token>",
+  "Environment": <integer, §14.3.4>,
+  "PublicKey": "<ASCII-armored device public key>",
+  "PingNotificationStatus": <integer | null>,
+  "PushNotificationStatus": <integer | null>
+}
+```
+
+* Absent OPTIONAL statuses are sent as JSON `null`.
+* `PublicKey` is always present in this profile. A null `PublicKey` would ask
+  for unencrypted delivery, which this profile forbids.
+* Success: HTTP 200 with `"Code": 1000`. The response body carries nothing
+  else of significance.
+
+A registration binds **(session UID, device token, device public key)** on
+the Service. Every Account signed in on the device is registered separately,
+under its own session.
+
+#### 14.3.3 Registration Procedure
+
+The client runs a long-lived background registration process. Its only state
+is the **current registration record** and the **set of session UIDs already
+registered** in this process lifetime. Both are held in memory only.
+
+1. **Triggers.** The procedure runs one step whenever either of these
+   happens:
+   a. the platform supplies a new or changed registration record. The client
+      then clears the registered-session set, because every session must be
+      re-registered under the new token;
+   b. the set of stored sessions changes (a session is added, rotated or
+      replaced). Only sessions not yet in the registered set are processed.
+2. **Candidate selection.** Candidates are stored sessions whose UID is not
+   in the registered set **and** whose Account is fully signed in. A session
+   that is still mid-login, still waiting for a second factor, or still
+   waiting for key unlock MUST be skipped silently. It is picked up on a
+   later trigger.
+3. If there are no candidates, or no registration record has been supplied
+   yet, the step ends.
+4. For each candidate:
+   a. obtain the device public key (§14.2.3);
+   b. send the request in §14.3.2 with the candidate's session;
+   c. on success, add the UID to the registered set.
+5. **Error handling** (per step):
+
+| Condition | Behaviour |
+|---|---|
+| Network failure (no HTTP response, or a transport error classed as network) | Wait until the OS reports connectivity, then wait a further **500 ms**, then retry the whole step. The delay prevents a tight loop when the connectivity probe succeeds but the endpoint keeps failing. |
+| HTTP 403 with API error code **9100** (missing scopes) | The session is authenticated but not yet fully scoped, typically because a second factor is pending. Abandon the step **without** error. The scope upgrade later changes the stored session, which re-triggers registration. |
+| Another in-memory user context already owns the Account (the session was rotated while the old context is alive) | Skip that session, log a warning, and continue with the others. |
+| Device-key generation, storage or export fails | Fatal for the step. Report the error. |
+| Any other API error | Fatal for the step. Report the error. |
+
+6. Because the registered set lives only in memory, every process start
+   re-registers every signed-in session as soon as the platform supplies the
+   registration record. This is REQUIRED behaviour. It keeps the Service's
+   view of the token and key current.
+
+#### 14.3.4 Environment Codes
+
+| Value | Push Provider / channel |
+|---|---|
+| 4 | Android cloud messaging (the reference profile) |
+| 6 | Apple push, production |
+| 7 | Apple push, beta / pre-release |
+| 14 | Apple push, production, alternate app target |
+| 15 | Apple push, development, alternate app target |
+| 16 | Apple push, development |
+
+Other values MUST NOT be sent. On a local store, values outside this table
+MUST be rejected as out of range.
+
+#### 14.3.5 Unregistration
+
+This profile defines no explicit unregistration request. A registration is
+scoped to the session that created it, so revoking the session (§5.5.2) ends
+delivery for that Account. On sign-out, a client SHOULD revoke the session.
+
+### 14.4 Delivery and Decryption
+
+#### 14.4.1 Push Envelope
+
+The Push Provider delivers a data message carrying two string fields:
+
+| Field | Description |
+|---|---|
+| `UID` | The session UID (§5.1.6) of the recipient Account's registered session. This is **not** the UserID. |
+| `encryptedMessage` | An ASCII-armored OpenPGP message (`-----BEGIN PGP MESSAGE-----` …), encrypted to the device public key. |
+
+The field names are case-sensitive, and their casing differs on purpose.
+The envelope carries nothing else in the clear.
+
+#### 14.4.2 Service-Side Encryption (informative)
+
+The Service:
+
+1. builds the notification object (§14.5) and serialises it as UTF-8 JSON;
+2. encrypts the octets to the device public key registered for the target
+   session, as a raw (literal-data) OpenPGP message, ASCII-armored;
+3. adds **no** signature;
+4. places the result, and the session UID, into the envelope.
+
+#### 14.4.3 Client-Side Decryption
+
+On receipt, the client MUST:
+
+1. Load the device private key from the secure store (§14.2.2). If it is
+   missing, fail with a cryptographic error. The notification cannot be
+   shown, and the client MUST NOT ask the Service for its content.
+2. Decrypt `encryptedMessage` (armored) with the device private key.
+3. **Not** verify a signature. The notification is encrypted to a public key
+   and carries no signer, so authenticity comes only from the channel and
+   from the follow-up authenticated API calls (§14.7). Content from a
+   notification MUST therefore be treated as **advisory display data**. It
+   MUST NOT be stored as authoritative mailbox state.
+4. Parse the plaintext as UTF-8 JSON. If parsing fails, report a
+   deserialisation error.
+5. Map `UID` to a locally stored session. That identifies which Account the
+   notification belongs to. If no local session matches the UID, the client
+   SHOULD discard the notification.
+6. Run product-level parsing (§14.5).
+
+Decryption needs no network access and no unlocked mailbox keys.
+
+Failures in steps 1–4 MUST be logged without the plaintext, and the
+notification MUST be dropped.
+
+### 14.5 Notification Payloads
+
+#### 14.5.1 Discriminated Union
+
+The decrypted JSON is an adjacently tagged object:
+
+```json
+{ "type": "<kind>", "data": { ... } }
+```
+
+| `type` | Meaning |
+|---|---|
+| `email` | A new or changed mail message (§14.5.2). |
+| `open_url` | An informational notice that opens a web page when tapped. For example, the Service sends one when the Account signs in on a new device (§14.5.3). |
+
+A client MUST reject an unknown `type` with a deserialisation error. It MUST
+NOT display unknown types.
+
+Within `data`, property names are **camelCase**, except inside the sender
+object (§14.5.4), which uses **PascalCase**. Boolean-like presentation hints
+use **IntBool** (§2).
+
+#### 14.5.2 `email` Payload
+
+| Field | Type | Req. | Description |
+|---|---|---|---|
+| `title` | S | yes | Notification title, as the Service rendered it. |
+| `subtitle` | S | yes | Notification subtitle, as the Service rendered it. |
+| `body` | S | yes | The message **subject**. |
+| `messageId` | S | yes | The Service message ID (§7.4). |
+| `sender` | Sender | yes | §14.5.4. |
+| `badge` | I | yes | Value for the application-icon badge (unread count). |
+| `largeIcon` | S | yes | Constant `"large_icon"`. Clients ignore it. |
+| `smallIcon` | S | yes | Constant `"small_icon"`. Clients ignore it. |
+| `sound` | IntBool | no | Play a sound. Default 0. |
+| `vibrate` | IntBool | no | Vibrate. Default 0. |
+| `action` | S | no | **Android profile only.** See below. |
+
+**`action` values:**
+
+| Value | Client behaviour |
+|---|---|
+| `message_created` | A new message arrived. Show a full notification. |
+| `message_touched` | Another device has already seen or handled the message (it corresponds to the *Touched* message flag, §7.4). The client SHOULD dismiss any notification it is showing for `messageId`, and SHOULD NOT show a new one. |
+| *absent* | Treat as `message_created`. Non-Android profiles never send `action`. |
+| *any other string* | Forward-compatible. The client MUST accept the payload, keep the raw value, and SHOULD NOT show a notification for it. |
+
+A message that has a `message_created` notification on display can be
+cleared later by a `message_touched` notification with the same `messageId`.
+Clients SHOULD therefore key displayed notifications by
+(Account, `messageId`), and SHOULD group them per Account.
+
+#### 14.5.3 `open_url` Payload
+
+| Field | Type | Req. | Description |
+|---|---|---|---|
+| `title` | S | yes | Title. |
+| `subtitle` | S | yes | Subtitle. |
+| `body` | S | yes | Notification text. |
+| `url` | S | yes | Absolute URL to open when the user taps the notification. |
+| `sender` | Sender | yes | §14.5.4. |
+| `badge` | I | yes | Badge value. |
+| `largeIcon`, `smallIcon` | S | yes | Constants. Ignored. |
+| `messageId` | S | yes | Correlation identifier. May be empty. Not a mail message reference. |
+| `sound`, `vibrate` | IntBool | no | As in §14.5.2. Default 0. |
+
+When the user taps the notification, the client SHOULD open `url` in an
+in-application web view. The client SHOULD refuse to open URLs whose scheme is not `https`.
+
+#### 14.5.4 Sender Object
+
+```json
+{ "Name": "<display name>", "Address": "<email>", "Group": "<contact group name or empty>" }
+```
+
+All three properties are REQUIRED strings and MAY be empty. They are
+personal data. Clients MUST redact them in logs.
+
+#### 14.5.5 Presentation Model
+
+After parsing, a client needs only:
+
+* **email:** subject (`body`), sender (Name, Address, Group), `messageId`,
+  `action`, and the owning Account (from `UID`);
+* **open_url:** content (`body`), sender, `url`, and the owning Account.
+
+`title`, `subtitle`, `badge`, `sound`, `vibrate` and the icon fields are
+hints. A client MAY render its own title, for example from the sender name
+and the Account address, and MAY apply the user's local sound and vibration
+preferences instead.
+
+### 14.6 Notification Quick Actions
+
+#### 14.6.1 Action Set
+
+An `email` notification MAY offer these actions. Each targets the Service
+message ID from the payload. When the action fires, the client may not know
+any local identifier for the message.
+
+| Action | Remote effect | Endpoint |
+|---|---|---|
+| Mark as read | Clear *Unread* | `PUT /mail/v4/messages/read` with `{"IDs": ["<messageId>"]}` |
+| Move to Archive | Move to system label `6` | `PUT /mail/v4/messages/label` with `{"Action": 1, "IDs": ["<messageId>"], "LabelID": "6", "SpamAction": null}` |
+| Move to Trash | Move to system label `3` | `PUT /mail/v4/messages/label` with `{"Action": 1, "IDs": ["<messageId>"], "LabelID": "3", "SpamAction": null}` |
+
+Responses follow §8.7: `{"Code": 1001, "Responses": [{"ID", "Response": {"Code", "Error"}}], "UndoToken": …}`
+for label, and `{"Responses": [...]}` for read. Quick actions never use undo
+tokens.
+
+#### 14.6.2 Execution Procedure
+
+Inputs: the Account (resolved from `UID`), the action, and OPTIONALLY the
+remaining background-execution time *T* that the operating system reports,
+in milliseconds.
+
+1. Resolve the Account's session. If the Account has no initialised session
+   (for example, signed out), finish successfully without doing anything.
+2. **Time budget.** If *T* is known, the request deadline is
+   `min(T − 1 s, 30 s)`, floored at zero. The 30 s cap reflects the shortest
+   background window that mobile operating systems guarantee for
+   notification handlers. If *T* is unknown, the normal request timeout
+   applies.
+3. **Immediate remote attempt.** Send the request in §14.6.1 once, within
+   the deadline, with transport-level retries (§4.5) **disabled**.
+4. **Durable enqueue.** Whatever the result of step 3, record the action in
+   the Account's persistent outgoing-action queue at the **highest**
+   priority. The record holds:
+   * the action and its target message ID;
+   * a flag that says whether the remote request must still be sent. The
+     flag is *true* if step 3 failed and *false* if it succeeded.
+5. **Local application.** When the queued action is processed locally:
+   * If the message already exists in the local store, apply the matching
+     local mutation (mark read, or move to Archive or Trash) and record its
+     inverse so that it can be reverted.
+   * If the message is not in the local store, which is the usual case
+     because the notification arrived before event sync, do nothing locally.
+     The next event sync (§12.3) brings the server state, which already
+     reflects the action.
+6. **Deferred remote application.** When the queue runs its remote phase,
+   it re-sends the request in §14.6.1 only if the flag is *true*. It then
+   uses the queue's normal retry policy and no deadline.
+7. **Revert.** If the queued action fails permanently, any local mutation
+   from step 5 MUST be reverted.
+8. **Rebase.** When server state for the message arrives later, the queued
+   action needs no reconciliation of its own. Server state wins.
+
+Queue records MUST be versioned. A record written by an earlier format that
+lacks the remote-pending flag MUST be read with the flag set to *true*.
+
+### 14.7 Opening a Notification
+
+When the user taps an `email` notification, the client MUST show fresh
+server state, not cached state. Locally cached data may be stale, or the
+message may not have been synced yet.
+
+#### 14.7.1 Message Resolution
+
+1. **Always fetch.** Request the message metadata by ID, even if a local copy
+   exists:
+   `GET /mail/v4/messages?ID[0]=<messageId>&Page=0`
+   (array filters use indexed query parameters).
+   Response: `{"Messages": [MessageMetadata], "Total": I, "Stale": B, ...}`.
+2. If `Messages` is empty, fail with "message not found on server" and show
+   nothing.
+3. **Dependencies.** Before storing the message, fetch and store any
+   referenced objects that are missing locally: labels and folders in
+   `LabelIDs`, the owning Address, and the conversation.
+4. **Store.** In one local transaction:
+   a. decide whether the server copy may overwrite the local copy. If the
+      message is a draft that is open in a local composer, and it has not
+      been sent or scheduled in the meantime, the stored copy is kept as is.
+      Otherwise the server copy is applied;
+   b. upsert the message;
+   c. re-apply ("rebase") every pending local action that touches this
+      message, so that the stored state equals server state plus pending
+      local intent.
+5. Re-read the message from the local store and return it. It now carries
+   the server update with the rebased local actions applied.
+
+#### 14.7.2 Conversation Opening
+
+When the client opens the conversation that holds the resolved message, and
+the open was triggered by a notification:
+
+1. If the OS reports no connectivity, fail with a network error. A
+   notification-originated open MUST NOT silently fall back to stale data.
+2. Request `GET /mail/v4/conversations/{conversationId}`.
+   Response: `{"Conversation": Conversation, "Messages": [MessageMetadata]}`.
+3. If the request returns HTTP 422 with API code **20052** (conversation does
+   not exist), the conversation has been deleted. Show nothing; this is not
+   an error.
+4. Fetch missing dependencies, as in §14.7.1 step 3, for the conversation
+   and each message.
+5. Store the conversation and its messages, and rebase pending local
+   actions, in one transaction.
+6. Display the conversation in the context of the label the user opened it
+   from (normally Inbox). If the conversation no longer carries that label,
+   report an error to the user interface; do not show an empty view.
+7. Choose the focused message with the label's normal rule: the oldest
+   message in the most recent run of consecutive unread messages, or else
+   the latest message.
+8. If the conversation was resurfaced by a snooze reminder, mark it as read
+   in that label.
+
+Message bodies are fetched and decrypted later, on demand, with the
+Address key ring (§9.2). Neither the notification nor the device key ever
+gives access to message bodies.
+
+### 14.8 Relationship to Authentication
+
+* **SRP is not used** to receive or decrypt notifications. The device key
+  works without the user's password and without any SRP exchange.
+* Registration (§14.3) and every follow-up request (§14.6, §14.7) need a
+  session established through the normal login (§5.1–§5.4), including any
+  second factor (§5.2). On a 401 they refresh the token as in §4.7.
+* A session that is still waiting for its second factor has reduced scopes.
+  Its registration requests fail with code 9100 and are deferred (§14.3.3).
+* Mobile clients send `x-pm-appversion` as `<platform>-<product>@<semver>`.
+  The `<platform>` token names the mobile operating system, for example
+  `android`. The values listed in §4.2 apply only to desktop clients.
+
+### 14.9 Error Summary
+
+| Phase | Condition | Outcome |
+|---|---|---|
+| Registration | Network failure | Wait for connectivity, then 500 ms, then retry. |
+| Registration | 403 / 9100 | Defer until the session's scopes change. |
+| Registration | Duplicate in-memory context | Skip the session. |
+| Registration | Key failure / other API error | The step fails and the error is reported. |
+| Decryption | Device key missing or unreadable | Cryptographic error. The notification is dropped. |
+| Decryption | OpenPGP decryption fails | Cryptographic error. The notification is dropped. |
+| Decryption | Plaintext is not valid JSON | Deserialisation error. The notification is dropped. |
+| Parsing | Unknown `type` | Deserialisation error. The notification is dropped. |
+| Parsing | Unknown `action` | Accepted. Typically not displayed. |
+| Quick action | Immediate attempt fails or times out | Queued for a deferred remote retry. |
+| Quick action | Account has no session | Success, with no effect. |
+| Open | Message not on server | "Not found". Nothing is displayed. |
+| Open | Conversation deleted (422 / 20052) | Nothing is displayed. Not an error. |
+| Open | Offline | Network error. No stale fallback. |
+
+---
+
+## 15. Security Considerations
 
 1. **Loopback only.** Both listeners MUST bind to 127.0.0.1. They speak
    plaintext by default. Exposing them on other interfaces would leak
@@ -2451,10 +2936,27 @@ Per Account:
 9. **Denial of service.** The admission controls of §11.12, the IMAP login
    throttle and the SMTP failure throttle bound the load that runaway
    clients can impose on the Service.
+10. **Push-notification confidentiality.** Notifications are encrypted end to
+    end to the device key. The Push Provider sees only the session UID, the
+    ciphertext size and the delivery timing. Implementations MUST NOT ask for
+    unencrypted delivery, and MUST NOT add plaintext fields to the push
+    envelope.
+11. **Device-key protection.** The device private key is stored unlocked. Its
+    protection depends entirely on the platform's secure credential store.
+    It MUST be excluded from backups and device-transfer mechanisms. If it is
+    compromised, past and future notifications for every Account on the
+    device are exposed, but message bodies and mailbox keys are not.
+12. **Unauthenticated notification content.** Notifications are not signed.
+    Their content is advisory display data. All state changes come from
+    authenticated API calls (§14.6, §14.7). Notification text MUST be
+    rendered as plain text, never as markup. `open_url` targets SHOULD be
+    restricted to `https`.
+13. **Personal data in logs.** Sender names, addresses, subjects and
+    decrypted payloads MUST NOT be logged in clear.
 
 ---
 
-## 15. Appendix A — Message Fingerprint Algorithm
+## 16. Appendix A — Message Fingerprint Algorithm
 
 This fingerprint identifies "the same message" across SMTP submission and a
 subsequent IMAP APPEND, even though header ordering, boundaries and
@@ -2487,7 +2989,7 @@ fingerprint = B64( h.digest() )
 
 ---
 
-## 16. Appendix B — Default Values and Limits
+## 17. Appendix B — Default Values and Limits
 
 | Parameter | Value |
 |---|---|
@@ -2526,10 +3028,16 @@ fingerprint = B64( h.digest() )
 | Gateway password | 16 random octets, B64URL-NP |
 | SRP size | 2048 bits, generator 2 |
 | bcrypt | `$2y$`, cost 10 |
+| Device key algorithm | ECC (Ed25519 primary, Curve25519 ECDH subkey), no passphrase |
+| Device key user ID | `not_for_email_use@domain.tld <not_for_email_use@domain.tld>` |
+| Device keys per installation | 1 (shared by all Accounts) |
+| Device registration retry delay | Wait for connectivity, then 500 ms |
+| Quick-action deadline | min(remaining OS time − 1 s, 30 s); no transport retries |
+| Quick-action queue priority | Highest |
 
 ---
 
-## 17. Appendix C — Status and Error Code Tables
+## 18. Appendix C — Status and Error Code Tables
 
 ### C.1 SMTP Replies Used
 
@@ -2567,6 +3075,24 @@ fingerprint = B64( h.digest() )
 ### C.4 Create-Draft Action Codes
 
 0 = reply, 1 = reply-all, 2 = forward, 3 = auto-response, 4 = read receipt.
+
+### C.5 Push Device Environment Codes
+
+4 = Android cloud messaging, 6 = Apple production, 7 = Apple beta,
+14 = Apple production (alternate target), 15 = Apple development (alternate
+target), 16 = Apple development.
+
+### C.6 Push-Notification API Error Codes
+
+| HTTP | Code | Context | Meaning |
+|---|---|---|---|
+| 403 | 9100 | Device registration | Session scopes are missing (second factor pending). Defer. |
+| 422 | 20052 | Conversation fetch | The conversation does not exist. |
+
+### C.7 Push Payload Discriminators
+
+`type`: `email`, `open_url`. `action` (Android only): `message_created`,
+`message_touched`; any other value is preserved and ignored.
 
 ---
 

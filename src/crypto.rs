@@ -337,6 +337,15 @@ impl UnlockedKey {
         Ok(k)
     }
 
+    /// Wrap a secret key whose secret material is not passphrase-protected
+    /// (the push device key, §14.2.1).
+    pub fn from_unprotected(key: SignedSecretKey) -> Self {
+        Self {
+            key,
+            passphrase: Zeroizing::new(Vec::new()),
+        }
+    }
+
     pub fn public_key(&self) -> SignedPublicKey {
         self.key.to_public_key()
     }

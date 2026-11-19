@@ -54,6 +54,11 @@ pub enum Error {
     #[error("OpenPGP error: {0}")]
     Pgp(String),
 
+    /// A cryptographic failure outside the OpenPGP mail lifecycle, e.g. a
+    /// missing or unreadable push device key (§14.4.3).
+    #[error("cryptographic error: {0}")]
+    Crypto(String),
+
     #[error("SRP error: {0}")]
     Srp(String),
 

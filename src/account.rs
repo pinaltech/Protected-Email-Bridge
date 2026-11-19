@@ -92,6 +92,9 @@ pub struct PersistedAccount {
     pub last_event_id: Option<String>,
     pub sync: SyncProgress,
     pub cache_key: String,
+    /// Persistent outgoing-action queue (notification quick actions, §14.6).
+    #[serde(default)]
+    pub action_queue: Vec<crate::push::queue::QueuedAction>,
 }
 
 impl PersistedAccount {
