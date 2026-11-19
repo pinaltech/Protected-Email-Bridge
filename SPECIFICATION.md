@@ -172,15 +172,13 @@ but MUST use them consistently. Recommended neutral names are shown.
 | Header | When | Value |
 |---|---|---|
 | `x-pm-appversion` | Every request | `<platform>-<APP_PRODUCT_TOKEN>@<semver>`. `<platform>` is one of `linux`, `macos`, `windows`: the platform the Client runs on, unless the embedding application names another. The Service rejects missing or unsupported values with error code 5001 or 5003. |
-| `User-Agent` | Every request | `<client>/<version> (<os>)`. `<client>/<version>` is the name and version of the most recent mail client seen (from the IMAP `ID` command, §11.4.3), or `NoClient/0.0.1` if none has been seen. Spaces in the client version are folded as `A (B)` → `A-B`. When an SMTP session authenticates while the agent is still the default, `UnknownClient/0.0.1` is substituted. Identification strings from note-taking agents MUST be ignored. An embedding application MAY instead set the complete value itself, which is then sent verbatim, without folding or the `(<os>)` suffix (§14.8). |
+| `User-Agent` | Every request | `<client>/<version> (<os>)`. `<client>/<version>` is the name and version of the most recent mail client seen (from the IMAP `ID` command, §11.4.3), or `NoClient/0.0.1` if none has been seen. Spaces in the client version are folded as `A (B)` → `A-B`. When an SMTP session authenticates while the agent is still the default, `UnknownClient/0.0.1` is substituted. Identification strings from note-taking agents MUST be ignored. |
 | `x-pm-uid` | Every authenticated request | The session UID (§5.1.6). |
 | `Authorization` | Every authenticated request | `Bearer <AccessToken>`. |
 | `x-pm-human-verification-token` | When retrying after a human-verification challenge (§5.3) | The verification token. |
 | `x-pm-human-verification-token-type` | Same as above | Comma-separated list of verification methods. |
 | `X-HTTP-Method-Override` | Message listing (§8.6) | `GET`. Sent on a `POST` whose body carries the filter. |
 | `Priority` | Metrics submission (§8.12) | `u=6`. |
-| `Accept-Language` | Device registration for environment 4 (§14.3.2) | `en`. |
-| `x-pm-locale` | Device registration for environment 4 (§14.3.2) | `en_US`. |
 
 ### 4.3 Clock Synchronisation
 
@@ -2570,8 +2568,6 @@ Provider rotates the token or the user changes notification permissions.
 }
 ```
 
-* Registrations for environment 4 SHOULD carry the `Accept-Language` and
-  `x-pm-locale` headers of §4.2.
 * Absent OPTIONAL statuses are sent as JSON `null`.
 * `PublicKey` is always present in this profile. A null `PublicKey` would ask
   for unencrypted delivery, which this profile forbids.
@@ -2913,10 +2909,6 @@ gives access to message bodies.
 * Mobile clients send `x-pm-appversion` as `<platform>-<product>@<semver>`.
   The `<platform>` token names the mobile operating system, for example
   `android`. The values listed in §4.2 apply only to desktop clients.
-* Mobile clients SHOULD send the `User-Agent` of their mobile application,
-  set by the embedding application as a complete value (§4.2). On Android
-  it has the form `<application>/<version> (Android <release>; <brand>
-  <model>)`.
 
 ### 14.9 Error Summary
 
@@ -3067,7 +3059,6 @@ fingerprint = B64( h.digest() )
 | Device key user ID | `not_for_email_use@domain.tld <not_for_email_use@domain.tld>` |
 | Device keys per installation | 1 (shared by all Accounts) |
 | Device registration retry delay | Wait for connectivity, then 500 ms |
-| Device registration locale (environment 4) | `Accept-Language: en`, `x-pm-locale: en_US` |
 | Quick-action deadline | min(remaining OS time − 1 s, 30 s); no transport retries |
 | Quick-action queue priority | Highest |
 
