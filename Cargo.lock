@@ -1213,6 +1213,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fcm_receiver_rs"
 version = "0.1.1"
+source = "git+https://github.com/agusibrahim/fcm_receiver.rs?rev=fc4309843e7cc8220d382b5fe09b3e7697e08d83#fc4309843e7cc8220d382b5fe09b3e7697e08d83"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -2851,6 +2852,7 @@ dependencies = [
  "bcrypt",
  "chrono",
  "crypto-bigint 0.7.11",
+ "encoding_rs",
  "fcm_receiver_rs",
  "futures",
  "hex",
