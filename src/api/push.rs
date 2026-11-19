@@ -12,6 +12,11 @@ use super::types::{Conversation, MessageMetadata, label_id};
 use crate::error::{ApiError, Error, Result};
 use crate::util::null_default;
 
+/// `Accept-Language` of an Android cloud-messaging registration (§4.2).
+pub const DEVICE_LOCALE_LANGUAGE: &str = "en";
+/// `x-pm-locale` of an Android cloud-messaging registration (§4.2).
+pub const DEVICE_LOCALE: &str = "en_US";
+
 /// API code: the session is missing scopes (second factor pending, §14.3.3).
 pub const CODE_MISSING_SCOPES: i64 = 9100;
 /// API code: the conversation does not exist (§14.7.2).
@@ -95,11 +100,16 @@ fn check_items(v: &Value) -> Result<()> {
 }
 
 impl ApiClient {
-    /// `POST /core/v4/devices` (§14.3.2).
+    /// `POST /core/v4/devices` (§14.3.2). Registrations for the Android
+    /// cloud-messaging environment carry the locale headers of §4.2.
     pub async fn register_device(&self, req: &DeviceRegistrationRequest) -> Result<()> {
-        let v: Value = self
-            .send_json(Request::post("/core/v4/devices").json(req))
-            .await?;
+        let mut post = Request::post("/core/v4/devices").json(req);
+        if req.environment == crate::push::Environment::AndroidCloudMessaging.code() {
+            post = post
+                .header("Accept-Language", DEVICE_LOCALE_LANGUAGE)
+                .header("x-pm-locale", DEVICE_LOCALE);
+        }
+        let v: Value = self.send_json(post).await?;
         check_code(&v)
     }
 

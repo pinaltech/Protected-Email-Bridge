@@ -172,13 +172,15 @@ but MUST use them consistently. Recommended neutral names are shown.
 | Header | When | Value |
 |---|---|---|
 | `x-pm-appversion` | Every request | `<platform>-<APP_PRODUCT_TOKEN>@<semver>`. `<platform>` is one of `linux`, `macos`, `windows`: the platform the Client runs on, unless the embedding application names another. The Service rejects missing or unsupported values with error code 5001 or 5003. |
-| `User-Agent` | Every request | `<client>/<version> (<os>)`. `<client>/<version>` is the name and version of the most recent mail client seen (from the IMAP `ID` command, §11.4.3), or `NoClient/0.0.1` if none has been seen. Spaces in the client version are folded as `A (B)` → `A-B`. When an SMTP session authenticates while the agent is still the default, `UnknownClient/0.0.1` is substituted. Identification strings from note-taking agents MUST be ignored. |
+| `User-Agent` | Every request | `<client>/<version> (<os>)`. `<client>/<version>` is the name and version of the most recent mail client seen (from the IMAP `ID` command, §11.4.3), or `NoClient/0.0.1` if none has been seen. Spaces in the client version are folded as `A (B)` → `A-B`. When an SMTP session authenticates while the agent is still the default, `UnknownClient/0.0.1` is substituted. Identification strings from note-taking agents MUST be ignored. An embedding application MAY instead set the complete value itself, which is then sent verbatim, without folding or the `(<os>)` suffix (§14.8). |
 | `x-pm-uid` | Every authenticated request | The session UID (§5.1.6). |
 | `Authorization` | Every authenticated request | `Bearer <AccessToken>`. |
 | `x-pm-human-verification-token` | When retrying after a human-verification challenge (§5.3) | The verification token. |
 | `x-pm-human-verification-token-type` | Same as above | Comma-separated list of verification methods. |
 | `X-HTTP-Method-Override` | Message listing (§8.6) | `GET`. Sent on a `POST` whose body carries the filter. |
 | `Priority` | Metrics submission (§8.12) | `u=6`. |
+| `Accept-Language` | Device registration for environment 4 (§14.3.2) | `en`. |
+| `x-pm-locale` | Device registration for environment 4 (§14.3.2) | `en_US`. |
 
 ### 4.3 Clock Synchronisation
 
@@ -2475,15 +2477,34 @@ The lifecycle has five phases:
 
 1. The Notification Client MUST generate the device key locally. It MUST NOT
    synchronise the key's private half with the Service or with other devices.
-2. Algorithm: an elliptic-curve OpenPGP key (RFC 4880 / RFC 9580). That is,
-   an EdDSA (Ed25519) primary signing key with an ECDH (Curve25519)
-   encryption subkey.
-3. User ID: a fixed, non-routable placeholder with identical name and email
+2. Algorithm: a version 4 elliptic-curve OpenPGP key (RFC 4880 / RFC 9580).
+   That is, an EdDSA (Ed25519, public-key algorithm 22) primary key with
+   one ECDH (Curve25519, public-key algorithm 18) encryption subkey. Both
+   carry the same creation time.
+3. The encryption subkey's ECDH KDF parameters (RFC 6637 §9) MUST name
+   SHA-512 (hash algorithm 10) and AES-256 (symmetric algorithm 9). The
+   Service rejects device keys with other KDF parameters, including the
+   SHA-256 / AES-128 pair that many implementations choose by default for
+   Curve25519, with HTTP 400 and code 2001 (§14.3.2).
+4. User ID: a fixed, non-routable placeholder with identical name and email
    components. The RECOMMENDED value is
    `not_for_email_use@domain.tld <not_for_email_use@domain.tld>`. The key
    MUST NOT be usable as, or published as, a mail key.
-4. The private key is generated **without** a passphrase.
-5. Exactly **one** device key exists per application installation. It is
+5. Self-signatures SHOULD be laid out as follows. Each is a version 4
+   signature over SHA-512, made at the key's creation time, with no
+   unhashed subpackets:
+
+   | Signature | Hashed subpackets, in order |
+   |---|---|
+   | Positive certification (type 0x13) of the user ID | Signature creation time (critical); preferred symmetric algorithms AES-256, AES-128; issuer key ID; salt notation; preferred hash algorithms SHA-512, SHA-256; preferred compression algorithms uncompressed, ZLIB; primary user ID; key flags certify and sign (critical); features: version 1 SEIPD; issuer fingerprint. |
+   | Subkey binding (type 0x18) | Signature creation time (critical); issuer key ID; salt notation; key flags encrypt communications and encrypt storage (critical); issuer fingerprint. |
+
+   The salt notation is a non-human-readable notation named
+   `salt@notations.openpgpjs.org` whose value is random octets as long as
+   the salt RFC 9580 assigns the signature's hash algorithm (32 octets for
+   SHA-512).
+6. The private key is generated **without** a passphrase.
+7. Exactly **one** device key exists per application installation. It is
    shared by all Accounts and sessions on that installation.
 
 #### 14.2.2 Storage
@@ -2514,7 +2535,9 @@ The lifecycle has five phases:
 #### 14.2.4 Public-Key Export
 
 For registration, the public key is exported as an **ASCII-armored** OpenPGP
-public key block (`-----BEGIN PGP PUBLIC KEY BLOCK-----` …).
+public key block (`-----BEGIN PGP PUBLIC KEY BLOCK-----` …), without armor
+headers, with the CRC-24 checksum line, and SHOULD end with the armor tail
+line, with no line terminator after it.
 
 ### 14.3 Device Registration
 
@@ -2547,11 +2570,16 @@ Provider rotates the token or the user changes notification permissions.
 }
 ```
 
+* Registrations for environment 4 SHOULD carry the `Accept-Language` and
+  `x-pm-locale` headers of §4.2.
 * Absent OPTIONAL statuses are sent as JSON `null`.
 * `PublicKey` is always present in this profile. A null `PublicKey` would ask
   for unencrypted delivery, which this profile forbids.
 * Success: HTTP 200 with `"Code": 1000`. The response body carries nothing
   else of significance.
+* HTTP 400 with code 2001 ("Invalid input") and empty `Details` reports an
+  unacceptable request. A device public key that does not meet §14.2.1 is
+  one cause; the response does not say which field was refused.
 
 A registration binds **(session UID, device token, device public key)** on
 the Service. Every Account signed in on the device is registered separately,
@@ -2885,6 +2913,10 @@ gives access to message bodies.
 * Mobile clients send `x-pm-appversion` as `<platform>-<product>@<semver>`.
   The `<platform>` token names the mobile operating system, for example
   `android`. The values listed in §4.2 apply only to desktop clients.
+* Mobile clients SHOULD send the `User-Agent` of their mobile application,
+  set by the embedding application as a complete value (§4.2). On Android
+  it has the form `<application>/<version> (Android <release>; <brand>
+  <model>)`.
 
 ### 14.9 Error Summary
 
@@ -2893,6 +2925,7 @@ gives access to message bodies.
 | Registration | Network failure | Wait for connectivity, then 500 ms, then retry. |
 | Registration | 403 / 9100 | Defer until the session's scopes change. |
 | Registration | Duplicate in-memory context | Skip the session. |
+| Registration | 400 / 2001 | The step fails and the error is reported. A device key that does not meet §14.2.1 is one cause. |
 | Registration | Key failure / other API error | The step fails and the error is reported. |
 | Decryption | Device key missing or unreadable | Cryptographic error. The notification is dropped. |
 | Decryption | OpenPGP decryption fails | Cryptographic error. The notification is dropped. |
@@ -3029,9 +3062,12 @@ fingerprint = B64( h.digest() )
 | SRP size | 2048 bits, generator 2 |
 | bcrypt | `$2y$`, cost 10 |
 | Device key algorithm | ECC (Ed25519 primary, Curve25519 ECDH subkey), no passphrase |
+| Device key ECDH KDF | SHA-512, AES-256 |
+| Device key self-signature hash | SHA-512, with a 32-octet salt notation |
 | Device key user ID | `not_for_email_use@domain.tld <not_for_email_use@domain.tld>` |
 | Device keys per installation | 1 (shared by all Accounts) |
 | Device registration retry delay | Wait for connectivity, then 500 ms |
+| Device registration locale (environment 4) | `Accept-Language: en`, `x-pm-locale: en_US` |
 | Quick-action deadline | min(remaining OS time − 1 s, 30 s); no transport retries |
 | Quick-action queue priority | Highest |
 

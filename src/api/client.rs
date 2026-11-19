@@ -242,6 +242,14 @@ impl ApiClient {
         *self.inner.hv.write().await = hv;
     }
 
+    /// Set an embedding application's complete HTTP User-Agent verbatim.
+    pub async fn set_user_agent(&self, agent: &str) -> Result<()> {
+        reqwest::header::HeaderValue::from_str(agent)
+            .map_err(|_| Error::Invalid("invalid User-Agent header".into()))?;
+        *self.inner.user_agent.write().await = agent.to_owned();
+        Ok(())
+    }
+
     /// Record the identity of the most recent mail client (§4.2).
     /// Identification strings from note-taking agents are ignored.
     pub async fn set_client_identity(&self, name: &str, version: &str) {
