@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::client::{ApiClient, Request};
+use super::client::{ApiClient, Request, SessionTokens};
 use super::types::SessionInfo;
 use crate::error::Result;
 use crate::util::null_default;
@@ -104,14 +104,42 @@ pub(crate) fn empty_fido2() -> Value {
 }
 
 impl ApiClient {
+    /// `POST /auth/v4/sessions` (§5.1.0): an anonymous session, which the
+    /// login then runs in and the auth request upgrades.
+    pub async fn create_anonymous_session(&self) -> Result<SessionTokens> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct R {
+            #[serde(rename = "UID")]
+            uid: String,
+            access_token: String,
+            refresh_token: String,
+        }
+        let r: R = self
+            .send_json(Request::post("/auth/v4/sessions").unauthenticated())
+            .await?;
+        Ok(SessionTokens {
+            uid: r.uid,
+            access_token: r.access_token,
+            refresh_token: r.refresh_token,
+        })
+    }
+
+    /// A login request: sent in the client's (anonymous) session when it
+    /// has one, else without (§5.1.0).
+    async fn login_request(&self, req: Request) -> Request {
+        if self.tokens().await.uid.is_empty() {
+            req.unauthenticated()
+        } else {
+            req
+        }
+    }
+
     /// `POST /auth/v4/info`.
     pub async fn auth_info(&self, username: &str) -> Result<AuthInfo> {
-        self.send_json(
-            Request::post("/auth/v4/info")
-                .unauthenticated()
-                .json(json!({ "Username": username })),
-        )
-        .await
+        let req = Request::post("/auth/v4/info").json(json!({ "Username": username }));
+        let req = self.login_request(req).await;
+        self.send_json(req).await
     }
 
     /// `POST /auth/v4` (SRP proof). Human verification headers are attached
@@ -123,13 +151,14 @@ impl ApiClient {
         client_proof: &str,
         srp_session: &str,
     ) -> Result<AuthResponse> {
-        let req = Request::post("/auth/v4").unauthenticated().json(json!({
+        let req = Request::post("/auth/v4").json(json!({
             "Username": username,
             "ClientEphemeral": client_ephemeral,
             "ClientProof": client_proof,
             "SRPSession": srp_session,
             "FIDO2": empty_fido2(),
         }));
+        let req = self.login_request(req).await;
         let req = self.with_hv(req).await;
         self.send_json(req).await
     }

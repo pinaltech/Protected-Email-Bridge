@@ -70,6 +70,18 @@ pub async fn login(
     client.set_human_verification(hv).await;
     let cfg = client.config().clone();
 
+    // The Service refuses a login outside a session for some app
+    // versions ("Invalid access token"), so the login runs in an anonymous
+    // one (§5.1.0). A retry (after human verification) keeps the one it
+    // has. A Service without anonymous sessions is logged in to without.
+    if client.tokens().await.uid.is_empty() {
+        match client.create_anonymous_session().await {
+            Ok(tokens) => client.set_tokens(tokens).await,
+            Err(Error::Api(e)) if e.status == 404 || e.status == 405 => {}
+            Err(e) => return Err(e),
+        }
+    }
+
     let info = client.auth_info(username).await?;
     let signing_key = crypto::parse_public_key(cfg.modulus_signing_key.as_bytes())?;
     let modulus = srp::verify_modulus(&info.modulus, &signing_key)?;
@@ -335,6 +347,54 @@ pub async fn unlock_from_passphrase(client: &ApiClient, salted: &[u8]) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::push::test_support;
+    use std::sync::Arc;
+
+    /// The login runs in an anonymous session (§5.1.0): the Service
+    /// refuses the info request without one, as it does for some app
+    /// versions. A Service without anonymous sessions is asked without.
+    #[tokio::test]
+    async fn login_runs_in_an_anonymous_session() {
+        for sessions in [true, false] {
+            let stub = test_support::start(Arc::new(move |s| match s.path.as_str() {
+                "/auth/v4/sessions" if sessions => (
+                    200,
+                    r#"{"Code":1000,"UID":"anon-1","AccessToken":"a","RefreshToken":"r","TokenType":"Bearer","Scopes":[]}"#.into(),
+                ),
+                "/auth/v4/sessions" => (404, r#"{"Code":404,"Error":"Not found"}"#.into()),
+                // An unsigned modulus: the login stops after this request.
+                "/auth/v4/info" if s.uid.as_deref() == Some("anon-1") || !sessions => (
+                    200,
+                    r#"{"Code":1000,"Version":4,"Modulus":"x","ServerEphemeral":"","Salt":"","SRPSession":"s"}"#.into(),
+                ),
+                _ => (401, r#"{"Code":401,"Error":"Invalid access token"}"#.into()),
+            }))
+            .await;
+            let client = ApiClient::new(test_support::config(&stub.base)).unwrap();
+            let error = login(&client, "ana", b"pw", None, |_| false)
+                .await
+                .err()
+                .expect("the unsigned modulus is refused");
+            assert_ne!(error.status(), Some(401), "{error}");
+            let seen = stub.seen.lock().unwrap().clone();
+            let paths: Vec<&str> = seen.iter().map(|s| s.path.as_str()).collect();
+            assert_eq!(paths, ["/auth/v4/sessions", "/auth/v4/info"]);
+            assert_eq!(seen[0].uid, None);
+            let expected = sessions.then(|| "anon-1".to_string());
+            assert_eq!(seen[1].uid, expected);
+            // A repeated login keeps the session it has.
+            if sessions {
+                let _ = login(&client, "ana", b"pw", None, |_| false).await;
+                let seen = stub.seen.lock().unwrap();
+                assert_eq!(
+                    seen.iter()
+                        .filter(|s| s.path == "/auth/v4/sessions")
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
 
     #[test]
     fn cbor() {
