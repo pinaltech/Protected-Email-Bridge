@@ -87,6 +87,8 @@ pub(crate) struct Request {
     pub headers: Vec<(String, String)>,
     pub body: Body,
     pub authenticated: bool,
+    /// `x-pm-appversion` for this request in place of the configured one.
+    pub app_version: Option<String>,
 }
 
 impl Request {
@@ -98,6 +100,7 @@ impl Request {
             headers: Vec::new(),
             body: Body::None,
             authenticated: true,
+            app_version: None,
         }
     }
     pub fn get(path: impl Into<String>) -> Self {
@@ -126,6 +129,11 @@ impl Request {
     }
     pub fn header(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
         self.headers.push((k.into(), v.into()));
+        self
+    }
+    /// Sends `x-pm-appversion` as `value` rather than the configured one.
+    pub fn app_version(mut self, value: impl Into<String>) -> Self {
+        self.app_version = Some(value.into());
         self
     }
     pub fn unauthenticated(mut self) -> Self {
@@ -402,7 +410,12 @@ impl ApiClient {
             .inner
             .http
             .request(req.method.clone(), &url)
-            .header("x-pm-appversion", self.inner.cfg.app_version_header())
+            .header(
+                "x-pm-appversion",
+                req.app_version
+                    .clone()
+                    .unwrap_or_else(|| self.inner.cfg.app_version_header()),
+            )
             .header("User-Agent", self.user_agent().await);
         if !req.query.is_empty() {
             rb = rb.query(&req.query);

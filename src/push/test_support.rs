@@ -14,6 +14,8 @@ pub struct Seen {
     pub method: String,
     pub path: String,
     pub body: serde_json::Value,
+    /// The `x-pm-appversion` header.
+    pub app_version: Option<String>,
 }
 
 pub type Responder = Arc<dyn Fn(&Seen) -> (u16, String) + Send + Sync>;
@@ -32,6 +34,9 @@ pub fn config(base: &str) -> Arc<DeploymentConfig> {
         app_product_token: "mail".into(),
         app_version: "1.0.0".into(),
         app_platform: Some("android".into()),
+        push_app_product_token: None,
+        push_app_version: None,
+        push_app_platform: None,
         product_name: "Test".into(),
         api_tls_pins: Vec::new(),
     })
@@ -87,7 +92,17 @@ pub async fn start_with_delay(respond: Responder, delay: std::time::Duration) ->
                             let path = first.next().unwrap_or("").to_string();
                             let body = serde_json::from_slice(&buf[end + 4..end + 4 + len])
                                 .unwrap_or(serde_json::Value::Null);
-                            let s = Seen { method, path, body };
+                            let app_version = head.lines().find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("x-pm-appversion")
+                                    .then(|| v.trim().to_string())
+                            });
+                            let s = Seen {
+                                method,
+                                path,
+                                body,
+                                app_version,
+                            };
                             let (status, resp) = respond(&s);
                             seen.lock().unwrap().push(s);
                             tokio::time::sleep(delay).await;

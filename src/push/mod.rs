@@ -15,7 +15,10 @@
 //! [`NotificationClient`] ties these together for a [`Gateway`]'s accounts.
 //! Mobile embedders set `DeploymentConfig::app_platform` to the mobile
 //! operating system (e.g. `android`) so that `x-pm-appversion` reads
-//! `android-<product>@<semver>` (§14.8).
+//! `android-<product>@<semver>` (§14.8). Device registration alone can be
+//! given its own product, version and platform
+//! (`DeploymentConfig::push_app_product_token`, `push_app_version`,
+//! `push_app_platform`).
 
 pub mod device_key;
 pub mod envelope;

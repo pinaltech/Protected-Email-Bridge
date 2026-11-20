@@ -135,6 +135,7 @@ not reproduce their values.
 | `SRP_SALT_SUFFIX` | A fixed 6-octet ASCII string appended to the decoded SRP salt in password-hash versions 3 and 4 (§5.1.3). |
 | `REFRESH_REDIRECT_URI` | A fixed absolute URI sent in the token-refresh request (§5.5.1). |
 | `APP_PRODUCT_TOKEN` | Product identifier embedded in the application-version header (§4.2). |
+| `PUSH_APP_PRODUCT_TOKEN`, `PUSH_APP_VERSION`, `PUSH_APP_PLATFORM` | OPTIONAL. The product identifier, version and platform of the application-version header sent with device registration (§14.3.2, §14.8). Each one not configured is the one sent with every other request. |
 | `API_TLS_PINS` | OPTIONAL set of SubjectPublicKeyInfo SHA-256 pins for the API endpoints and their proxies (§4.10). |
 
 ### 3.2 Local Artifacts
@@ -2915,6 +2916,11 @@ gives access to message bodies.
 * Mobile clients send `x-pm-appversion` as `<platform>-<product>@<semver>`.
   The `<platform>` token names the mobile operating system, for example
   `android`. The values listed in §4.2 apply only to desktop clients.
+* The device registration request (§14.3.2) sends `x-pm-appversion` built
+  from `PUSH_APP_PLATFORM`, `PUSH_APP_PRODUCT_TOKEN` and `PUSH_APP_VERSION`
+  (§3.1), each one not configured taken from the header every other request
+  sends. Every other request, including the follow-up requests of §14.6 and
+  §14.7, keeps that header.
 
 ### 14.9 Error Summary
 

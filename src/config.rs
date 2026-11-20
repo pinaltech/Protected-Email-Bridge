@@ -22,6 +22,16 @@ pub struct DeploymentConfig {
     /// The platform embedded in `x-pm-appversion` in place of the one this
     /// build runs on (`platform_token`); `None` (or blank) keeps that one.
     pub app_platform: Option<String>,
+    /// `PUSH_APP_PRODUCT_TOKEN` — the product token in `x-pm-appversion`
+    /// for device registration (§14.3.2); `None` (or blank) uses
+    /// `app_product_token`.
+    pub push_app_product_token: Option<String>,
+    /// The version in `x-pm-appversion` for device registration; `None`
+    /// (or blank) uses `app_version`.
+    pub push_app_version: Option<String>,
+    /// The platform in `x-pm-appversion` for device registration; `None`
+    /// (or blank) uses the one `platform` gives.
+    pub push_app_platform: Option<String>,
     /// Product name used in the IMAP greeting / ID response.
     pub product_name: String,
     /// `API_TLS_PINS` — optional base64 SHA-256 SPKI pins.
@@ -36,6 +46,23 @@ impl DeploymentConfig {
             self.platform(),
             self.app_product_token,
             self.app_version
+        )
+    }
+
+    /// `x-pm-appversion` for device registration (§14.3.2, §14.8): each
+    /// part set for it, else the part `app_version_header` uses.
+    pub fn push_app_version_header(&self) -> String {
+        fn pick<'a>(set: &'a Option<String>, default: &'a str) -> &'a str {
+            set.as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(default)
+        }
+        format!(
+            "{}-{}@{}",
+            pick(&self.push_app_platform, self.platform()),
+            pick(&self.push_app_product_token, &self.app_product_token),
+            pick(&self.push_app_version, &self.app_version)
         )
     }
 
@@ -212,6 +239,9 @@ mod tests {
             app_product_token: "app".into(),
             app_version: "1.2.3".into(),
             app_platform: app_platform.map(Into::into),
+            push_app_product_token: None,
+            push_app_version: None,
+            push_app_platform: None,
             product_name: "App".into(),
             api_tls_pins: Vec::new(),
         }
@@ -223,5 +253,22 @@ mod tests {
         assert_eq!(config(None).app_version_header(), own);
         assert_eq!(config(Some(" ")).app_version_header(), own);
         assert_eq!(config(Some("windows")).app_version_header(), "windows-app@1.2.3");
+    }
+
+    /// Device registration's header takes each part set for it and the
+    /// general one otherwise; the general header is unchanged.
+    #[test]
+    fn push_app_version_header_overrides_each_part_set() {
+        let general = config(Some("windows"));
+        assert_eq!(general.push_app_version_header(), "windows-app@1.2.3");
+        let mut c = config(Some("windows"));
+        c.push_app_platform = Some("android".into());
+        assert_eq!(c.push_app_version_header(), "android-app@1.2.3");
+        c.push_app_product_token = Some("notify".into());
+        c.push_app_version = Some(" ".into());
+        assert_eq!(c.push_app_version_header(), "android-notify@1.2.3");
+        c.push_app_version = Some("4.5.6".into());
+        assert_eq!(c.push_app_version_header(), "android-notify@4.5.6");
+        assert_eq!(c.app_version_header(), "windows-app@1.2.3");
     }
 }

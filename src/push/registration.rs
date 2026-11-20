@@ -523,6 +523,8 @@ mod tests {
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].method, "POST");
         assert_eq!(seen[0].path, "/core/v4/devices");
+        // No registration-specific version: the general one.
+        assert_eq!(seen[0].app_version.as_deref(), Some("android-mail@1.0.0"));
         assert_eq!(seen[0].body["DeviceToken"], "tok");
         assert_eq!(seen[0].body["Environment"], 4);
         assert!(seen[0].body["PingNotificationStatus"].is_null());

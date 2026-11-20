@@ -95,10 +95,16 @@ fn check_items(v: &Value) -> Result<()> {
 }
 
 impl ApiClient {
-    /// `POST /core/v4/devices` (§14.3.2).
+    /// `POST /core/v4/devices` (§14.3.2), with the application version
+    /// configured for device registration (§14.8).
     pub async fn register_device(&self, req: &DeviceRegistrationRequest) -> Result<()> {
+        let version = self.config().push_app_version_header();
         let v: Value = self
-            .send_json(Request::post("/core/v4/devices").json(req))
+            .send_json(
+                Request::post("/core/v4/devices")
+                    .app_version(version)
+                    .json(req),
+            )
             .await?;
         check_code(&v)
     }
@@ -188,6 +194,34 @@ pub const TRASH_LABEL: &str = label_id::TRASH;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Device registration names the application version configured for
+    /// it; every other request keeps the general one.
+    #[tokio::test]
+    async fn registration_sends_its_own_app_version() {
+        let stub = test_support::start(Arc::new(|s| match s.path.as_str() {
+            "/core/v4/events/latest" => (200, r#"{"Code":1000,"EventID":"e1"}"#.into()),
+            _ => (200, r#"{"Code":1000}"#.into()),
+        }))
+        .await;
+        let mut config = (*test_support::config(&stub.base)).clone();
+        config.push_app_platform = Some("ios".into());
+        config.push_app_version = Some("9.9.9".into());
+        let client = ApiClient::new(Arc::new(config)).unwrap();
+        let request = DeviceRegistrationRequest {
+            device_token: "tok".into(),
+            environment: 4,
+            public_key: "key".into(),
+            ping_notification_status: None,
+            push_notification_status: None,
+        };
+        client.register_device(&request).await.unwrap();
+        client.get_latest_event_id().await.unwrap();
+        let seen = stub.seen.lock().unwrap().clone();
+        assert_eq!(seen[0].path, "/core/v4/devices");
+        assert_eq!(seen[0].app_version.as_deref(), Some("ios-mail@9.9.9"));
+        assert_eq!(seen[1].app_version.as_deref(), Some("android-mail@1.0.0"));
+    }
 
     #[test]
     fn registration_body_sends_null_statuses() {
