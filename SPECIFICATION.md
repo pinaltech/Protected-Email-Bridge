@@ -280,24 +280,6 @@ The Service authenticates the password with a variant of SRP-6a. Every
 big-integer value is 2048 bits (L = 256 octets), serialised **little-endian**,
 zero-padded to L octets.
 
-#### 5.1.0 Anonymous Session
-
-The login runs in an anonymous session. Before step 1, a Gateway whose
-client holds no session MUST create one with `POST /auth/v4/sessions` (no
-body, unauthenticated):
-
-```json
-{ "Code": 1000, "UID": "<uid>", "AccessToken": "<token>", "RefreshToken": "<token>", "TokenType": "Bearer", "Scopes": [] }
-```
-
-and send the info and auth requests (§5.1.1, §5.1.6) authenticated with it
-(`x-pm-uid`, `Authorization`), refreshing it on a 401 as any session
-(§4.7). For some app versions the Service refuses these requests outside a
-session, with HTTP 401 and `"Invalid access token"`. A repeated login (after
-human verification, §5.3) reuses the session it has. The auth response's
-tokens replace the anonymous session's. Where the Service has no anonymous
-sessions (404 or 405), the login proceeds without one.
-
 #### 5.1.1 Step 1 — Info Request
 
 `POST /auth/v4/info`
